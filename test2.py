@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 import csv
 import re
 from urllib.parse import unquote
+import cloudscraper
 
 
 class Scraper:
@@ -51,10 +52,9 @@ class Scraper:
 
     def scrape(self) -> list[dict]:
         # Méthode pour lancer le scraping
-        page: requests.Response = requests.get(
-            self.url,
-            headers=self.headers
-        )
+        
+        scraper:cloudscraper.Cloudflare = cloudscraper.create_scraper(browser='chrome')
+        page:requests.Response= scraper.get(self.url, headers=self.headers)
 
         print(f"Status code : {page.status_code}")
 
@@ -75,7 +75,7 @@ class Scraper:
             if "cc-m-download-file" not in classes:
                 continue
 
-            document: dict | None = self.parse_document(element)
+            document: dict[str, str] | None = self.parse_document(element)
             if not document:
                 continue
 
@@ -105,7 +105,7 @@ class Scraper:
         if not lien:
             return None
 
-        href: str = str(lien.get("href", ""))
+        href: str = str(lien.get("href", "")).split("?")[0]
         if ".pdf" not in href:
             return None
 
@@ -169,4 +169,4 @@ if documents:
 
 # Aperçu
 for doc in documents[:3]:
-    print(doc)
+    print("\n".join(f"  {cle} : {valeur}" for cle, valeur in doc.items()) + "\n")
