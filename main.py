@@ -6,88 +6,75 @@ from unidecode import unidecode
 import re
 
 
-class Scraper():
-    #pour recuperer les docpdf des deliberations disponibles sur le site de cdg90
-    #pour chaque document on extrait :
+class Scraper:
+    # pour recuperer les docpdf des deliberations disponibles sur le site de cdg90
+    # pour chaque document on extrait :
     # le titre, la date,l 'url,le type(PV ou CR), un identifiant
-    
-    def __init__(self):
-        
+
+    def __init__(self, url: str):
         # Initialisation du scraper
-        
         self.url: str = url
-        self.page: requests.Response= requests.get(self.url)
-        self.soup: BeautifulSoup = BeautifulSoup(self.page.text, "html.parser")
-        self.documents: list[dict] = [] #list pour stocker les documents  # pyright: ignore[reportMissingTypeArgument]
-        pass
-    
-    
+
     def scrape(self):
-        # Méthode pour lancer le scraping de la page et afficher les documents 
-        
-        for element in self.soup.find_all("a"):
-            
-            #avancer si c'est pas un lien d'un pdf
-            if not element.get("href") or ".pdf" not in element.get("href"):  
+        # Méthode pour lancer le scraping de la page et afficher les documents
+
+        page: requests.Response = requests.get(self.url)
+        soup: BeautifulSoup = BeautifulSoup(page.text, "html.parser")
+
+        documents:list[dict] = []
+        for element in soup.find_all("a"):
+            document: dict | None = self.parse_document(element=element)
+            if not document:
                 continue
+            documents.append(document)
 
-            doc_url: str = element.get("href")
-            
-            #corriger les urls relatives
-            if element.get("href").startswith("/"):
-                doc_url: str = "https:www.cdg90.fr" + doc_url
+    def parse_document(self, element: BeautifulSoup) -> dict:
+        # Retourne la liste des documents touves par le scraper
+        # avancer si c'est pas un lien d'un pdf
+        if not element.get("href") or ".pdf" not in element.get("href"):
+            return None
 
-            text: str = element.get_text(strip=True)
-            
-            #normalisation du texte(mettre tout en minuscule et sans accents)
-            normal_text = unidecode(text).lower()
-            
-            #trier pour garder que liens ayant "seance du"
-            if "seance du" not in normal_text:
-                continue
-            
-            #utilisation de regex pour reconnaitre un patern et extraire la date 
-            current_date_rgx = re.match(r".*?(\d{1,2}(?:er|)\s[A-zéèû]+\s\d{4})", normal_text)
-            if not current_date_rgx:
-                continue
-            current_date = current_date_rgx.group(1)
+        doc_url: str = element.get("href")
 
-            if "pv" in doc_url.lower():
-                doc_type = "PV"
-            else:
-                doc_type = "CR"
+        # corriger les urls relatives
+        if element.get("href").startswith("/"):
+            doc_url: str = "https:www.cdg90.fr" + doc_url
 
-            doc_id = os.path.basename(doc_url).replace(".pdf", "")
+        text: str = element.get_text(strip=True)
 
-            document = {
-                "title": normal_text,
-                "date": current_date,
-                "url": doc_url,
-                "type": doc_type,
-                "id": doc_id,
-            }
-            self.documents.append(document)
-        
-        pass
-    
-    def get_document(self, print_docs = True) -> list[dict]:
-        #Retourne la liste des documents touves par le scraper
-        if print_docs:
-            for doc in self.documents:
-                print(json.dumps(doc, indent=4, ensure_ascii=False))
+        # normalisation du texte(mettre tout en minuscule et sans accents)
+        normal_text = unidecode(text).lower()
 
-        return self.documents
-        pass
+        # trier pour garder que liens ayant "seance du"
+        if "seance du" not in normal_text:
+            return None
 
-    # Faire d'autres méthodes pour que le scraper puisse retourner des dictionnaires contenant les métadonnées 
-    # et puissent les printer. (1 méthode)
+        # utilisation de regex pour reconnaitre un patern et extraire la date
+        current_date_rgx = re.match(
+            r".*?(\d{1,2}(?:er|)\s[A-zéèû]+\s\d{4})", normal_text
+        )
+        if not current_date_rgx:
+            return None
+        current_date = current_date_rgx.group(1)
 
-    # Typer une fois les variables, les méthodes, je veux des commentaires et des descriptions pour les méthodes
+        if "pv" in doc_url.lower():
+            doc_type = "PV"
+        else:
+            doc_type = "CR"
 
-# --- A factoriser ---
+        doc_id = os.path.basename(doc_url).replace(".pdf", "")
 
-
-# --- ---
+        document = {
+            "title": normal_text,
+            "date": current_date,
+            "url": doc_url,
+            "type": doc_type,
+            "id": doc_id,
+        }
+        return document
 
 # Que seul la méthode instancié me permet d'avoir les logs des documents.
-scraper= Scraper(url="https://www.cdg90.fr/le-cdg-90/administration/deliberations-pv/").scrape()
+scraper = (
+    Scraper(url="https://www.cdg90.fr/le-cdg-90/administration/deliberations-pv/")
+    .scrape()
+)
