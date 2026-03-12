@@ -1,38 +1,57 @@
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag, element 
 import csv
 import re
 from urllib.parse import unquote
 import cloudscraper
+import logging, sys, os
+import dateparser
+from datetime import date, datetime
+
+
+logging.basicConfig(
+    format="%(asctime)s : %(levelname)-8s {%(filename)s:%(lineno)d} : %(message)s",
+    level=logging.INFO,
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+
+try:
+    __level = getattr(logging, os.getenv("LOG_LEVEL", "info").upper())
+except:
+    __level = logging.INFO
+
+LOGGER = logging.getLogger(__name__)
+LOGGER.setLevel(level=__level)
+
 
 
 class Scraper:
-    
+
     #Scraper pour les délibérations du Conseil Communautaire
     # des Pyrénées Audoises.
     # Pour chaque document on extrait :
-    # - le nom du fichier
-    # - la date (héritée du bloc )
-    # - l'url
-    # - le type (ODJ, Délibération, Liste, PV)
-    # l'identifiant (DC_YYYY_NNN)
-    
+    # - COLL_NOM:  nom dela collectivite
+    # - DELIB_OBJET: Le nom du fichier
+    # - DELIB_DATE: la date (héritée du bloc ) au format A-M_J
+    # - DELIB_URL: l'url
+    # - type:  ODJ, Délibération, Liste, PV
+    # - DELIB_ID: identifiant (DC_YYYY_NNN)
 
-    BASE_URL = "https://www.pyreneesaudoises.fr"
+
+    BASE_URL: str = "https://www.pyreneesaudoises.fr"
+    COLL_NOM: str = "Communauté de Communes des Pyrénées Audoises"
 
     # Regex compilées une fois pour toute la classe
-    REGEX_NUMERO = re.compile(
+    REGEX_NUMERO: re.Pattern[str] = re.compile(
         r'(DC[_-]\d{4}[_-]\d{3,4}(?:BIS)?)',
         re.IGNORECASE
     )
-    REGEX_ANNEE = re.compile(r'\b(20\d{2})\b')
+    REGEX_ANNEE: re.Pattern[str] = re.compile(r'\b(20\d{2})\b')
+    REGEX_DATE_FICHIER: re.Pattern[str] = re.compile(
+        r'(\d{2})\.(\d{2})\.(\d{4})'
+    )
 
-    MOIS_FR = {
-        "janvier":"01", "février":"02", "mars":"03",
-        "avril":"04",   "mai":"05",     "juin":"06",
-        "juillet":"07", "août":"08",    "septembre":"09",
-        "octobre":"10", "novembre":"11","décembre":"12"
-    }
+
 
     def __init__(self, url: str):
         # Initialisation du scraper
@@ -49,17 +68,18 @@ class Scraper:
         self._annee: str | None = None
         self._mois:  str | None = None
         self._mois_num: str | None = None
+        self._jour: str = "01"
 
     def scrape(self) -> list[dict]:
         # Méthode pour lancer le scraping
-        
+
         scraper:cloudscraper.Cloudflare = cloudscraper.create_scraper(browser='chrome')
         page:requests.Response= scraper.get(self.url, headers=self.headers)
 
-        print(f"Status code : {page.status_code}")
+        logging.info(f"Status code : {page.status_code}")
 
         if page.status_code != 200:
-            print("Impossible de récupérer la page")
+            logging.error("Impossible de récupérer la page")
             return []
 
         soup: BeautifulSoup = BeautifulSoup(page.text, "html.parser")
@@ -68,7 +88,7 @@ class Scraper:
         for element in soup.find_all(True):
 
             # Mettre à jour l'année et le mois courants
-            self._mettre_a_jour_contexte(element)
+            self.parse_date(element)
 
             # Traiter uniquement les blocs de fichiers PDF
             classes = element.get("class") or []
@@ -84,23 +104,61 @@ class Scraper:
         print(f"{len(documents)} documents trouvés")
         return documents
 
-    def _mettre_a_jour_contexte(self, element) -> None:
+    def parse_date(self, element) -> None:
         # Met à jour l'année courante quand on trouve un h2
         if element.name == "h2":
-            match = self.REGEX_ANNEE.search(element.text)
-            if match:
-                self._annee    = match.group(1)
-                self._mois     = None
-                self._mois_num = None
+            match = self.REGEX_ANNEE.search(element.get_text())
+            if not match:
+                return
+            self._annee    = match.group(1)
+            self._mois     = None
+            self._mois_num = None
+            self._jour = "01"
+            return
 
         # Met à jour le mois courant quand on trouve un h3
-        elif element.name == "h3":
-            texte          = element.text.strip().lower()
-            self._mois     = texte.capitalize()
-            self._mois_num = self.MOIS_FR.get(texte, "??")
+        if element.name == "h3":
+            texte: str = element.get_text().strip()
+            date_parsee: datetime | None = dateparser.parse(texte, languages=["fr"])
+
+            if not date_parsee:
+                return
+            self._mois = texte.capitalize()
+            self._mois_num = date_parsee.strftime("%m")
+            self._jour = "01"
+            return
+        # Cas bloc fichier — on cherche une date exacte dans le nom
+        classes = element.get("class") or []
+        if "cc-m-download-file" not in classes:
+            return
+
+        lien = element.find("a", class_="cc-m-download-link")
+        if not lien or not isinstance(lien, Tag):
+            return
+
+        nom = unquote(str(lien.get("href", "")).split("/")[-1].split("?")[0])
+
+        # Cas ODJ — date en français dans le nom
+        if "odj" in nom.lower():
+            texte_propre = nom.replace("+", " ").replace(".pdf", "")
+            date_parsee = dateparser.parse(texte_propre, languages=["fr"])
+            if date_parsee:
+                self._jour = date_parsee.strftime("%d")
+            return
+
+        # Cas Liste — date DD.MM.YYYY dans le nom
+        match_date = self.REGEX_DATE_FICHIER.search(nom)
+        if match_date:
+            jour, mois, annee = match_date.groups()
+            self._jour = jour
+            return
+
+        # Cas général — jour inconnu
+        self._jour= "01"
 
     def parse_document(self, element) -> dict[str, str] | None:
         # Retourne un document structuré depuis un bloc HTML
+
         lien = element.find("a", class_="cc-m-download-link")
         if not lien:
             return None
@@ -110,47 +168,43 @@ class Scraper:
             return None
 
         # Nom réel depuis l'URL 
-        nom_fichier: str = unquote(
-            href.split("/")[-1].split("?")[0]
-        )
-
-        # Taille du fichier
-        taille_span = element.find("span", class_="cc-m-download-file-size")
-        taille: str = taille_span.text.strip() if taille_span else "?"
+        nom_fichier: str = unquote(href.split("/")[-1].split("?")[0])
 
         # Identifiant avec regex
         match_num = self.REGEX_NUMERO.search(nom_fichier)
         doc_id: str = match_num.group(1).upper() if match_num else "N/A"
 
         # Date héritée du contexte h2/h3
-        date: str = (
-            f"{self._annee}-{self._mois_num}"
-            if self._annee and self._mois_num
-            else "?"
-        )
-
+        
         # Type détecté par regex
-        doc_type: str = self._detecter_type(nom_fichier)
+        doc_type: str = self.detecter_type(nom_fichier)
 
         return {
-            "title":   nom_fichier,
-            "date":    date,
-            "url":     self.BASE_URL + href,
-            "type":    doc_type,
-            "id":      doc_id,
-            "taille":  taille,
+            "COLL_NOM":    self.COLL_NOM,
+            "DELIB_ID":    doc_id,
+            "DELIB_DATE":  self.parse_date_bloc(),
+            "DELIB_OBJET": nom_fichier,
+            "DELIB_URL":   self.BASE_URL + href,
+            "type":        self.detecter_type(nom_fichier),
         }
 
-    def _detecter_type(self, nom: str) -> str:
+    def parse_date_bloc(self) -> str:
+        #Retourne la date complète AAAA-MM-JJ
+        if not self._annee or not self._mois_num:
+            return "?"
+
+        return f"{self._annee}-{self._mois_num}-{self._jour}"
+    
+    def detecter_type(self, nom: str) -> str:
         # Détecte le type de document par regex
-        n = nom.lower()
-        if re.search(r'\bodj\b', n):           
+        n: str = nom.lower().replace("+", " ") 
+        if re.search(r'\bodj\b', n):
             return "ODJ"
-        if re.search(r'dc[_-]\d{4}', n):       
+        if re.search(r'dc[_-]\d{4}', n):
             return "Deliberation"
-        if re.search(r'liste.{0,10}delib', n):  
+        if n.startswith("liste"):
             return "Liste"
-        if re.search(r'\bpv\b|carence', n):     
+        if re.search(r'\bpv\b|carence', n):
             return "PV"
         return "Autre"
 
