@@ -208,7 +208,6 @@ class Scraper:
             return "PV"
         return "Autre"
 
-
 documents = Scraper(
     url="https://www.pyreneesaudoises.fr/document-publics/d%C3%A9lib%C3%A9rations-ccpa/d%C3%A9lib%C3%A9rations-conseil-communautaire/"
 ).scrape()
